@@ -1,4 +1,4 @@
-# rgpl-spacy-api
+# nlp-spacy-api
 
 spaCy FastAPI for Custom Cognitive Skills in Azure Search
 
