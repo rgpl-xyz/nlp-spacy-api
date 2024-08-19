@@ -21,7 +21,7 @@ This project has two key dependencies:
 To run locally in debug mode run:
 
 ```bash
-cd ./rgpl-spacy-api
+cd ./nlp-spacy-api
 python -m venv venv
 .\venv\Scripts\activate # or source venv/bin/activate on MacOS/Linux
 pip install -r requirements.txt
