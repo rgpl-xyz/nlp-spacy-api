@@ -38,6 +38,37 @@ class SpacyExtractor:
         """
         return "-".join([s.lower() for s in text.split()])
 
+    def _process_entities(self, spacy_doc) -> Dict:
+        """Process entities from a spaCy document and return structured entity data.
+        
+        Args:
+            spacy_doc: A spaCy document object containing entities.
+            
+        Returns:
+            dict: Dictionary mapping entity IDs to entity data with name, label, and matches.
+        """
+        entities = {}
+        
+        for ent in spacy_doc.ents:
+            ent_id = ent.kb_id or ent.ent_id or self._name_to_id(ent.text)
+
+            if ent_id not in entities:
+                # Normalize entity name
+                ent_name = ent.text.capitalize() if ent.text.lower() == ent.text else ent.text
+                entities[ent_id] = {
+                    "name": ent_name,
+                    "label": ent.label_,
+                    "matches": [],
+                }
+            
+            entities[ent_id]["matches"].append({
+                "start": ent.start_char, 
+                "end": ent.end_char, 
+                "text": ent.text
+            })
+        
+        return entities
+
     def extract_entities(self, records: List[Dict[str, str]]) -> List[Dict]:
         """Apply the pre-trained model to a batch of records using spaCy's pipe for efficiency
         
@@ -57,26 +88,7 @@ class SpacyExtractor:
             res = []
             # Use spaCy's pipe for efficient batch processing
             for doc_id, spacy_doc in zip(ids, self.nlp.pipe(texts, batch_size=1000)):
-                entities = {}
-                
-                for ent in spacy_doc.ents:
-                    ent_id = ent.kb_id or ent.ent_id or self._name_to_id(ent.text)
-
-                    if ent_id not in entities:
-                        # Normalize entity name
-                        ent_name = ent.text.capitalize() if ent.text.lower() == ent.text else ent.text
-                        entities[ent_id] = {
-                            "name": ent_name,
-                            "label": ent.label_,
-                            "matches": [],
-                        }
-                    
-                    entities[ent_id]["matches"].append({
-                        "start": ent.start_char, 
-                        "end": ent.end_char, 
-                        "text": ent.text
-                    })
-
+                entities = self._process_entities(spacy_doc)
                 res.append({"id": doc_id, "entities": list(entities.values())})
             
             return res
@@ -89,7 +101,7 @@ class SpacyExtractor:
         """Extract noun phrases from a batch of documents using spaCy's pipe for efficiency.
 
         Args:
-            documents (list): A list of dictionaries, each containing an 'id' and 'text' 
+            documents (list): A list of dictionaries, each containing an id and text 
                 representing the document to process.
 
         Returns:
@@ -100,8 +112,8 @@ class SpacyExtractor:
             return []
 
         try:
-            ids = [doc['id'] for doc in documents]
-            texts = [doc['text'] for doc in documents]
+            ids = [doc[self.input_id_col] for doc in documents]
+            texts = [doc[self.input_text_col] for doc in documents]
             
             results = []
             
@@ -124,7 +136,7 @@ class SpacyExtractor:
         """Extract both entities and noun phrases in a single pass for maximum efficiency.
         
         Args:
-            documents (list): A list of dictionaries, each containing an 'id' and 'text'.
+            documents (list): A list of dictionaries, each containing an id and text.
             
         Returns:
             dict: Dictionary containing 'entities' and 'noun_phrases' results.
@@ -133,33 +145,16 @@ class SpacyExtractor:
             return {"entities": [], "noun_phrases": []}
 
         try:
-            ids = [doc['id'] for doc in documents]
-            texts = [doc['text'] for doc in documents]
+            ids = [doc[self.input_id_col] for doc in documents]
+            texts = [doc[self.input_text_col] for doc in documents]
             
             entities_results = []
             noun_phrases_results = []
             
             # Single pass through spaCy's pipe
             for doc_id, spacy_doc in zip(ids, self.nlp.pipe(texts, batch_size=1000)):
-                # Extract entities
-                entities = {}
-                for ent in spacy_doc.ents:
-                    ent_id = ent.kb_id or ent.ent_id or self._name_to_id(ent.text)
-                    
-                    if ent_id not in entities:
-                        ent_name = ent.text.capitalize() if ent.text.lower() == ent.text else ent.text
-                        entities[ent_id] = {
-                            "name": ent_name,
-                            "label": ent.label_,
-                            "matches": [],
-                        }
-                    
-                    entities[ent_id]["matches"].append({
-                        "start": ent.start_char, 
-                        "end": ent.end_char, 
-                        "text": ent.text
-                    })
-                
+                # Extract entities using the common method
+                entities = self._process_entities(spacy_doc)
                 entities_results.append({"id": doc_id, "entities": list(entities.values())})
                 
                 # Extract noun phrases
