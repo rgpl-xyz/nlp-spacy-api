@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from pydantic import BaseModel
 
 
@@ -21,7 +21,7 @@ ENT_PROP_MAP = {
     "PERCENT": "percentages",
     "PERSON": "people",
     "PRODUCT": "products",
-    "QUANTITY": "quanities",
+    "QUANTITY": "quantities",
     "TIME": "times",
     "WORK_OF_ART": "worksOfArt",
 }
@@ -42,7 +42,16 @@ class RecordsRequest(BaseModel):
 
 
 class RecordDataResponse(BaseModel):
-    entities: List
+    entities: List[Dict[str, Any]]
+
+
+class RecordDataNounPhrasesResponse(BaseModel):
+    noun_phrases: List[str]
+
+
+class RecordDataCombinedResponse(BaseModel):
+    entities: List[Dict[str, Any]]
+    noun_phrases: List[str]
 
 
 class Message(BaseModel):
@@ -52,12 +61,34 @@ class Message(BaseModel):
 class RecordResponse(BaseModel):
     recordId: str
     data: RecordDataResponse
-    errors: Optional[List[Message]]
-    warnings: Optional[List[Message]]
+    errors: Optional[List[Message]] = None
+    warnings: Optional[List[Message]] = None
+
+
+class RecordNounPhrasesResponse(BaseModel):
+    recordId: str
+    data: RecordDataNounPhrasesResponse
+    errors: Optional[List[Message]] = None
+    warnings: Optional[List[Message]] = None
+
+
+class RecordCombinedResponse(BaseModel):
+    recordId: str
+    data: RecordDataCombinedResponse
+    errors: Optional[List[Message]] = None
+    warnings: Optional[List[Message]] = None
 
 
 class RecordsResponse(BaseModel):
     values: List[RecordResponse]
+
+
+class RecordsNounPhrasesResponse(BaseModel):
+    values: List[RecordNounPhrasesResponse]
+
+
+class RecordsCombinedResponse(BaseModel):
+    values: List[RecordCombinedResponse]
 
 
 class RecordEntitiesByTypeResponse(BaseModel):
