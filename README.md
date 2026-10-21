@@ -2,18 +2,6 @@
 
 spaCy FastAPI for Custom Cognitive Skills in Azure Search
 
-## 🚀 Recent Optimizations
-
-This API has been optimized for better performance and reliability:
-
-- **Batch Processing**: All endpoints now use spaCy's efficient `pipe()` method for batch processing
-- **Caching**: Entity ID generation is cached for repeated entities
-- **Error Handling**: Comprehensive error handling with proper HTTP status codes
-- **CORS Support**: Configured for production deployment
-- **Health Monitoring**: Added health check endpoint
-- **Combined Extraction**: New `/extract_all` endpoint for maximum efficiency
-- **Memory Optimization**: Reduced redundant data processing and memory usage
-
 ## API Endpoints
 
 This API provides four main endpoints for natural language processing:
@@ -21,19 +9,16 @@ This API provides four main endpoints for natural language processing:
 - **`/entities`** - Extract named entities from text
 - **`/entities_by_type`** - Extract entities grouped by type (compatible with Azure Search)
 - **`/noun_phrases`** - Extract noun phrases from text
-- **`/extract_all`** - Extract both entities and noun phrases in a single optimized pass
+- **`/extract_all`** - Extract both entities and noun phrases
 - **`/health`** - Health check endpoint for monitoring
 
 All endpoints accept batch processing of multiple documents and return structured JSON responses.
 
-### Performance Comparison
+## How It Works
 
-The new `/extract_all` endpoint provides significant performance improvements:
+Every route speaks Azure's custom-skill format: a request carries a batch of records, each with a `recordId` and `data.text`, and the response carries one record per request record, in the same order and with the same `recordId`. If one record can't be analyzed, for example because its text is longer than the model accepts, that record gets a message in its `errors` and the rest of the batch still succeeds. A record whose `language` isn't the model's (English) is still analyzed, with a note in its `warnings`.
 
-- **~30-50% faster** than calling `/entities` and `/noun_phrases` separately
-- **Single spaCy pass** through documents instead of multiple passes
-- **Reduced memory usage** through optimized data structures
-- **Better error handling** with detailed logging
+Each batch goes through spaCy once (`app/analysis.py`), which yields every text's entities and noun phrases together; the routes differ only in which of those they return, and the record format lives in `app/skill.py`. `/extract_all` is therefore the way to get both in one request. The model loads when the server starts, and the route handlers run in FastAPI's thread pool so analysis doesn't block other requests such as `/health`.
 
 ---
 
@@ -119,7 +104,7 @@ curl -X POST "http://localhost:8080/noun_phrases" \
   -H "Content-Type: application/json" \
   -d '{"values": [{"recordId": "1", "data": {"text": "The quick brown fox jumps over the lazy dog."}}]}'
 
-# Test combined extraction (optimized)
+# Test combined extraction
 curl -X POST "http://localhost:8080/extract_all" \
   -H "Content-Type: application/json" \
   -d '{"values": [{"recordId": "1", "data": {"text": "Apple Inc. was founded by Steve Jobs in California."}}]}'
@@ -128,9 +113,21 @@ curl -X POST "http://localhost:8080/extract_all" \
 curl -X GET "http://localhost:8080/health"
 ```
 
-3. **Run performance tests:**
+3. **Smoke-test or time a running server** (these need `requests`, from `requirements-dev.txt`):
 ```bash
-python test_performance.py
+python scripts/smoke.py              # calls every endpoint once
+python scripts/benchmark.py          # median time per endpoint over 5 rounds
+python scripts/smoke.py http://other-host:8080   # or set NLP_API_URL
+```
+
+### Running the Tests
+
+The tests use the real `en_core_web_sm` model and don't need a running server:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+pytest --cov=app        # with a coverage report
 ```
 
 ### Troubleshooting
@@ -150,7 +147,7 @@ pip install fastapi uvicorn python-dotenv spacy srsly requests typing-extensions
 ```
 
 **Performance Issues:**
-- Ensure you're using the `/extract_all` endpoint for combined extraction
+- If you need both entities and noun phrases, ask `/extract_all` once instead of calling two routes
 - Monitor memory usage with large document batches
 - Check the logs for any processing errors
 

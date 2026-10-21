@@ -111,6 +111,38 @@ def test_the_model_loads_at_startup_not_at_import(nlp):
         assert started.get("/health").status_code == 200
 
 
+def test_health_reports_an_unusable_model_as_unhealthy(nlp):
+    class BrokenModel:
+        meta = nlp.meta
+        lang = nlp.lang
+
+        def __call__(self, text):
+            raise RuntimeError("model gone")
+
+    with TestClient(create_app(load_nlp=BrokenModel)) as broken:
+        response = broken.get("/health")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Service unhealthy"}
+
+
+def test_a_missing_model_stops_startup_with_install_advice(monkeypatch, caplog):
+    def missing(name):
+        raise OSError(f"[E050] Can't find model '{name}'")
+
+    monkeypatch.setattr(app.api.spacy, "load", missing)
+
+    with caplog.at_level("ERROR"):
+        try:
+            app.api.load_default_nlp()
+        except OSError:
+            pass
+        else:
+            raise AssertionError("expected the missing model to stop startup")
+
+    assert "python -m spacy download en_core_web_sm" in caplog.text
+
+
 def test_the_app_imports_from_any_working_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
