@@ -134,7 +134,7 @@ def test_a_missing_model_stops_startup_with_install_advice(monkeypatch, caplog):
 
     with caplog.at_level("ERROR"):
         try:
-            app.api.load_default_nlp()
+            app.api.load_model("en_core_web_sm")
         except OSError:
             pass
         else:

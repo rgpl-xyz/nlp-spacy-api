@@ -7,7 +7,7 @@ from dataclasses import asdict
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from starlette.middleware.cors import CORSMiddleware
@@ -25,36 +25,36 @@ from app.models import (
     RecordsRequest,
     RecordsResponse,
 )
+from app.settings import Settings, load_settings
 from app.skill import run_skill
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "en_core_web_sm"
-
 EXAMPLE_REQUEST = json.loads((Path(__file__).parent / "data" / "example_request.json").read_text())
 
 router = APIRouter()
 
 
-def load_default_nlp() -> Language:
-    """Load the spaCy model the service runs with."""
-    logger.info("Loading spaCy model %s...", MODEL_NAME)
+def load_model(name: str) -> Language:
+    """Load a spaCy model by package name."""
+    logger.info("Loading spaCy model %s...", name)
     try:
-        return spacy.load(MODEL_NAME)
+        return spacy.load(name)
     except OSError:
-        logger.error("Please ensure you have installed the spaCy model: python -m spacy download %s", MODEL_NAME)
+        logger.error("Please ensure you have installed the spaCy model: python -m spacy download %s", name)
         raise
 
 
-def create_app(load_nlp: Callable[[], Language] = load_default_nlp) -> FastAPI:
+def create_app(load_nlp: Optional[Callable[[], Language]] = None, settings: Optional[Settings] = None) -> FastAPI:
     """Build the API. The model loads when the app starts, not when this module is imported,
-    so tests can pass their own loader."""
+    so tests can pass their own loader; by default it's the model the settings name."""
+    settings = settings or load_settings()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        nlp = load_nlp()
+        nlp = load_nlp() if load_nlp else load_model(settings.model)
         application.state.nlp = nlp
         application.state.analyzer = Analyzer(nlp)
         logger.info("spaCy model %s_%s ready", nlp.meta["lang"], nlp.meta["name"])
@@ -67,10 +67,9 @@ def create_app(load_nlp: Callable[[], Language] = load_default_nlp) -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Configure CORS
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins for development
+        allow_origins=settings.cors_allow_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
         allow_headers=["*"],

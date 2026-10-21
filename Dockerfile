@@ -1,12 +1,12 @@
-FROM tiangolo/uvicorn-gunicorn-fastapi:python3.9
-ENV PORT 8080
-ENV APP_MODULE app.api:app
-ENV LOG_LEVEL debug
-ENV WEB_CONCURRENCY 2
+FROM python:3.13-slim
 
-COPY ./requirements.txt ./requirements.txt
-RUN pip install -r requirements.txt
+WORKDIR /srv
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-RUN spacy download en_core_web_sm
+COPY app ./app
 
-COPY ./app /app/app
+# Settings are read by app/settings.py; WEB_CONCURRENCY workers each load their own copy of the model
+ENV PORT=8080 WEB_CONCURRENCY=2
+EXPOSE 8080
+CMD ["sh", "-c", "exec uvicorn app.api:app --host 0.0.0.0 --port \"$PORT\" --workers \"$WEB_CONCURRENCY\""]

@@ -38,9 +38,9 @@ This project has two key dependencies:
 ## Run Locally
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.10 or newer (tested on 3.13 in the container and 3.14 locally)
 - pip (Python package installer)
-- On Linux: gcc, gcc-c++, python3-devel (for compiling spaCy dependencies)
+- On Linux, only if pip has to compile spaCy's dependencies: gcc, gcc-c++, python3-devel
 
 ### Installation Steps
 
@@ -68,21 +68,35 @@ source venv/bin/activate
 # Upgrade pip and install build tools
 pip install --upgrade pip setuptools wheel
 
-# Install all dependencies from requirements.txt
+# Install the pinned dependencies, including the en_core_web_sm model
 pip install -r requirements.txt
 ```
 
-4. **Download spaCy language model:**
-```bash
-python -m spacy download en_core_web_sm
-```
-
-5. **Start the server:**
+4. **Start the server:**
 ```bash
 python main.py
 # or
 uvicorn app.api:app --reload --host 0.0.0.0 --port 8080
 ```
+
+### Settings
+
+Set these environment variables to change the defaults (`app/settings.py` reads them):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PORT` | `8080` | Port for `python main.py` and the container |
+| `SPACY_MODEL` | `en_core_web_sm` | spaCy model package to load; install it first |
+| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated browser origins allowed to call the API |
+
+### Run in a Container
+
+```bash
+docker build -t nlp-spacy-api .        # or podman
+docker run -p 8080:8080 nlp-spacy-api
+```
+
+The image runs `WEB_CONCURRENCY` uvicorn workers (default 2); each loads its own copy of the model.
 
 ### Testing the API
 
@@ -135,7 +149,7 @@ pytest --cov=app        # with a coverage report
 **Linux Compilation Issues:**
 If you encounter compilation errors with spaCy dependencies, try:
 - Installing system dependencies: `sudo dnf install gcc gcc-c++ python3-devel` (Fedora/RHEL)
-- The updated requirements.txt uses compatible versions that should work on most Linux systems
+- requirements.txt pins versions that publish prebuilt wheels for Linux, macOS and Windows, so compiling is rarely needed
 
 **Virtual Environment Activation:**
 On Linux, always use `source venv/bin/activate` instead of running the activate script directly.
@@ -143,7 +157,8 @@ On Linux, always use `source venv/bin/activate` instead of running the activate 
 **Dependency Installation:**
 If you encounter issues with the requirements.txt, you can install dependencies individually:
 ```bash
-pip install fastapi uvicorn python-dotenv spacy srsly requests typing-extensions
+pip install fastapi uvicorn spacy
+python -m spacy download en_core_web_sm
 ```
 
 **Performance Issues:**
