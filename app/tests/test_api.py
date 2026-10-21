@@ -83,7 +83,10 @@ def test_a_failing_record_does_not_fail_the_request(client, nlp):
     response = client.post("/noun_phrases", json=records("The quick brown fox.", too_long))
 
     assert response.status_code == 200
-    assert response.json()["values"][1]["errors"]
+    short, long = response.json()["values"]
+    assert short["errors"] is None
+    assert short["data"]["noun_phrases"] == ["The quick brown fox"]
+    assert long["errors"] == [{"message": f"Text is {len(too_long):,} characters; the limit is {nlp.max_length:,}."}]
 
 
 def test_warns_about_languages_the_model_does_not_speak(client):

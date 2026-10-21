@@ -3,10 +3,11 @@
 
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from starlette.middleware.cors import CORSMiddleware
@@ -14,6 +15,7 @@ from starlette.responses import RedirectResponse
 import spacy
 from spacy.language import Language
 
+from app.analysis import Analysis, Analyzer
 from app.models import (
     ENT_PROP_MAP,
     CombinedData,
@@ -24,7 +26,6 @@ from app.models import (
     RecordsResponse,
 )
 from app.skill import run_skill
-from app.spacy_extractor import SpacyExtractor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -55,7 +56,7 @@ def create_app(load_nlp: Callable[[], Language] = load_default_nlp) -> FastAPI:
     async def lifespan(application: FastAPI):
         nlp = load_nlp()
         application.state.nlp = nlp
-        application.state.extractor = SpacyExtractor(nlp)
+        application.state.analyzer = Analyzer(nlp)
         logger.info("spaCy model %s_%s ready", nlp.meta["lang"], nlp.meta["name"])
         yield
 
@@ -78,31 +79,17 @@ def create_app(load_nlp: Callable[[], Language] = load_default_nlp) -> FastAPI:
     return application
 
 
-def get_extractor(request: Request) -> SpacyExtractor:
-    return request.app.state.extractor
+def get_analyzer(request: Request) -> Analyzer:
+    return request.app.state.analyzer
 
 
-def analyze_with(extractor: SpacyExtractor) -> Callable[[List[str]], List[Dict[str, Any]]]:
-    """Each text's entities and noun phrases from one pass, in input order."""
-
-    def analyze(texts: List[str]) -> List[Dict[str, Any]]:
-        documents = [{"id": str(index), "text": text} for index, text in enumerate(texts)]
-        results = extractor.extract_entities_and_noun_phrases(documents)
-        return [
-            {"entities": entities["entities"], "noun_phrases": phrases["noun_phrases"]}
-            for entities, phrases in zip(results["entities"], results["noun_phrases"])
-        ]
-
-    return analyze
+def answer(body: RecordsRequest, analyzer: Analyzer, to_data: Callable[[Analysis], Dict[str, Any]]):
+    return run_skill(body.values, analyzer.analyze, to_data, model_language=analyzer.nlp.lang)
 
 
-def answer(body: RecordsRequest, extractor: SpacyExtractor, to_data: Callable[[Dict[str, Any]], Dict[str, Any]]):
-    return run_skill(body.values, analyze_with(extractor), to_data, model_language=extractor.nlp.lang)
-
-
-def entities_by_type(analysis: Dict[str, Any]) -> EntitiesByTypeData:
+def entities_by_type(analysis: Analysis) -> EntitiesByTypeData:
     groups = defaultdict(list)
-    for entity in analysis["entities"]:
+    for entity in analysis.entities:
         groups[ENT_PROP_MAP.get(entity["label"], entity["label"].lower())].append(entity["name"])
     return dict(groups)
 
@@ -118,30 +105,30 @@ def docs_redirect():
 
 
 @router.post("/entities", response_model=RecordsResponse[EntitiesData], tags=["NER"])
-def extract_entities(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
+def extract_entities(body: RecordsRequest = EXAMPLE_BODY, analyzer: Analyzer = Depends(get_analyzer)):
     """Extract Named Entities from a batch of Records."""
-    return answer(body, extractor, lambda analysis: {"entities": analysis["entities"]})
+    return answer(body, analyzer, lambda analysis: {"entities": analysis.entities})
 
 
 @router.post("/entities_by_type", response_model=RecordsResponse[EntitiesByTypeData], tags=["NER"])
-def extract_entities_by_type(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
+def extract_entities_by_type(body: RecordsRequest = EXAMPLE_BODY, analyzer: Analyzer = Depends(get_analyzer)):
     """Extract Named Entities from a batch of Records separated by entity label.
         This route can be used directly as a Cognitive Skill in Azure Search
         For Documentation on integration with Azure Search, see here:
         https://docs.microsoft.com/en-us/azure/search/cognitive-search-custom-skill-interface"""
-    return answer(body, extractor, entities_by_type)
+    return answer(body, analyzer, entities_by_type)
 
 
 @router.post("/noun_phrases", response_model=RecordsResponse[NounPhrasesData], tags=["Syntax"])
-def extract_noun_phrases(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
+def extract_noun_phrases(body: RecordsRequest = EXAMPLE_BODY, analyzer: Analyzer = Depends(get_analyzer)):
     """Extract Noun Phrases from a batch of Records."""
-    return answer(body, extractor, lambda analysis: {"noun_phrases": analysis["noun_phrases"]})
+    return answer(body, analyzer, lambda analysis: {"noun_phrases": analysis.noun_phrases})
 
 
 @router.post("/extract_all", response_model=RecordsResponse[CombinedData], tags=["Combined"])
-def extract_all(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
+def extract_all(body: RecordsRequest = EXAMPLE_BODY, analyzer: Analyzer = Depends(get_analyzer)):
     """Extract both entities and noun phrases from a batch of Records in a single pass."""
-    return answer(body, extractor, lambda analysis: analysis)
+    return answer(body, analyzer, asdict)
 
 
 @router.get("/health", tags=["Health"])
