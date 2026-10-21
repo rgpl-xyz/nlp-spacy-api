@@ -1,44 +1,60 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
+import importlib
 
-from starlette.testclient import TestClient
-from app.api import app
+from fastapi.testclient import TestClient
+
+import app.api
+from app.api import create_app
+from app.tests.conftest import records
 
 
-def test_docs_redirect():
-    client = TestClient(app)
+def test_root_redirects_to_the_docs(client):
     response = client.get("/")
-    assert response.history[0].status_code == 302
+
     assert response.status_code == 200
-    assert response.url == "http://testserver/docs"
+    assert str(response.url).endswith("/docs")
 
 
-def test_api():
-    client = TestClient(app)
+def test_health_names_the_loaded_model(client):
+    response = client.get("/health")
 
-    text = """But Google is starting from behind. The company made a late push
-    into hardware, and Apple's Siri, available on iPhones, and Amazon's Alexa
-    software, which runs on its Echo and Dot devices, have clear leads in
-    consumer adoption."""
-
-    request_data = {
-        "values": [{"recordId": "a1", "data": {"text": text, "language": "en"}}]
-    }
-
-    response = client.post("/spacy_entities", json=request_data)
     assert response.status_code == 200
+    assert response.json() == {"status": "healthy", "model": "en_core_web_sm"}
 
-    first_record = response.json()["values"][0]
-    assert first_record["recordId"] == "a1"
-    assert first_record["errors"] == None
-    assert first_record["warnings"] == None
 
-    assert first_record["data"]["entities"] == [
-        "Alexa",
-        "Amazon",
-        "Apple",
-        "Echo and Dot",
-        "Google",
-        "iPhones",
-        "Siri",
-    ]
+def test_noun_phrases(client):
+    response = client.post("/noun_phrases", json=records("The quick brown fox jumps over the lazy dog."))
+
+    assert response.status_code == 200
+    [record] = response.json()["values"]
+    assert record["recordId"] == "r0"
+    assert record["data"]["noun_phrases"] == ["The quick brown fox", "the lazy dog"]
+
+
+def test_entities(client):
+    response = client.post("/entities", json=records("Apple Inc. was founded by Steve Jobs in California."))
+
+    assert response.status_code == 200
+    [record] = response.json()["values"]
+    found = {(entity["name"], entity["label"]) for entity in record["data"]["entities"]}
+    assert {("Apple Inc.", "ORG"), ("Steve Jobs", "PERSON"), ("California", "GPE")} <= found
+
+
+def test_the_model_loads_at_startup_not_at_import(nlp):
+    loads = []
+
+    def load_nlp():
+        loads.append("loaded")
+        return nlp
+
+    application = create_app(load_nlp=load_nlp)
+    assert loads == []
+
+    with TestClient(application) as started:
+        assert loads == ["loaded"]
+        assert started.get("/health").status_code == 200
+
+
+def test_the_app_imports_from_any_working_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    importlib.reload(app.api)

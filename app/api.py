@@ -2,17 +2,17 @@
 # Licensed under the MIT License.
 
 from collections import defaultdict
-import os
+from contextlib import asynccontextmanager
 import logging
-from typing import List, Dict
+from pathlib import Path
+from typing import Callable, List, Dict
 
-from dotenv import load_dotenv, find_dotenv
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
 import spacy
+from spacy.language import Language
 import srsly
-import uvicorn
 
 from app.models import (
     ENT_PROP_MAP,
@@ -28,51 +28,70 @@ from app.spacy_extractor import SpacyExtractor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="rgpl-spacy-api",
-    version="1.0",
-    description="spaCy FastAPI for Custom Cognitive Skills in Azure Search",
-)
+MODEL_NAME = "en_core_web_sm"
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+example_request = srsly.read_json(Path(__file__).parent / "data" / "example_request.json")
 
-example_request = srsly.read_json("app/data/example_request.json")
+router = APIRouter()
 
-# Load spaCy model once at startup
-try:
-    logger.info("Loading spaCy model...")
-    nlp = spacy.load("en_core_web_sm")
-    logger.info("spaCy model loaded successfully")
-    
-    # Test the model
-    test_doc = nlp("Test document")
-    logger.info(f"Model test successful - found {len(test_doc.ents)} entities")
-    
-    extractor = SpacyExtractor(nlp)
-    logger.info("SpacyExtractor initialized successfully")
-    
-except Exception as e:
-    logger.error(f"Failed to load spaCy model: {e}")
-    logger.error("Please ensure you have installed the spaCy model: python -m spacy download en_core_web_sm")
-    raise
+
+def load_default_nlp() -> Language:
+    """Load the spaCy model the service runs with."""
+    logger.info("Loading spaCy model %s...", MODEL_NAME)
+    try:
+        return spacy.load(MODEL_NAME)
+    except OSError:
+        logger.error("Please ensure you have installed the spaCy model: python -m spacy download %s", MODEL_NAME)
+        raise
+
+
+def create_app(load_nlp: Callable[[], Language] = load_default_nlp) -> FastAPI:
+    """Build the API. The model loads when the app starts, not when this module is imported,
+    so tests can pass their own loader."""
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        nlp = load_nlp()
+        application.state.nlp = nlp
+        application.state.extractor = SpacyExtractor(nlp)
+        logger.info("spaCy model %s_%s ready", nlp.meta["lang"], nlp.meta["name"])
+        yield
+
+    application = FastAPI(
+        title="rgpl-spacy-api",
+        version="1.0",
+        description="spaCy FastAPI for Custom Cognitive Skills in Azure Search",
+        lifespan=lifespan,
+    )
+
+    # Configure CORS
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins for development
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+    application.include_router(router)
+    return application
+
+
+def get_extractor(request: Request) -> SpacyExtractor:
+    return request.app.state.extractor
+
 
 def prepare_documents(values: List) -> List[Dict[str, str]]:
     """Prepare documents for processing to avoid redundant operations."""
     return [{"id": val.recordId, "text": val.data.text} for val in values]
 
-@app.get("/", include_in_schema=False)
+@router.get("/", include_in_schema=False)
 def docs_redirect():
     return RedirectResponse(f"/docs")
 
-@app.post("/entities", response_model=RecordsResponse, tags=["NER"])
-async def extract_entities(body: RecordsRequest = Body(..., example=example_request)):
+@router.post("/entities", response_model=RecordsResponse, tags=["NER"])
+async def extract_entities(
+    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
+):
     """Extract Named Entities from a batch of Records."""
 
     try:
@@ -89,10 +108,12 @@ async def extract_entities(body: RecordsRequest = Body(..., example=example_requ
         logger.error(f"Error in extract_entities: {e}")
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
-@app.post(
+@router.post(
     "/entities_by_type", response_model=RecordsEntitiesByTypeResponse, tags=["NER"]
 )
-async def extract_entities_by_type(body: RecordsRequest = Body(..., example=example_request)):
+async def extract_entities_by_type(
+    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
+):
     """Extract Named Entities from a batch of Records separated by entity label.
         This route can be used directly as a Cognitive Skill in Azure Search
         For Documentation on integration with Azure Search, see here:
@@ -116,10 +137,12 @@ async def extract_entities_by_type(body: RecordsRequest = Body(..., example=exam
         logger.error(f"Error in extract_entities_by_type: {e}")
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
-@app.post("/noun_phrases", response_model=RecordsNounPhrasesResponse, tags=["Syntax"])
-async def extract_noun_phrases(body: RecordsRequest = Body(..., example=example_request)):
+@router.post("/noun_phrases", response_model=RecordsNounPhrasesResponse, tags=["Syntax"])
+async def extract_noun_phrases(
+    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
+):
     """Extract Noun Phrases from a batch of Records."""
-    
+
     try:
         documents = prepare_documents(body.values)
         noun_phrases_res = extractor.extract_noun_phrases(documents)
@@ -134,19 +157,21 @@ async def extract_noun_phrases(body: RecordsRequest = Body(..., example=example_
         logger.error(f"Error in extract_noun_phrases: {e}")
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
-@app.post("/extract_all", response_model=RecordsCombinedResponse, tags=["Combined"])
-async def extract_all(body: RecordsRequest = Body(..., example=example_request)):
+@router.post("/extract_all", response_model=RecordsCombinedResponse, tags=["Combined"])
+async def extract_all(
+    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
+):
     """Extract both entities and noun phrases from a batch of Records in a single optimized pass."""
-    
+
     try:
         documents = prepare_documents(body.values)
         results = extractor.extract_entities_and_noun_phrases(documents)
-        
+
         # Combine results into the expected format
         combined_results = []
         entities_dict = {er["id"]: er["entities"] for er in results["entities"]}
         noun_phrases_dict = {np["id"]: np["noun_phrases"] for np in results["noun_phrases"]}
-        
+
         for doc_id in entities_dict.keys():
             combined_results.append({
                 "recordId": doc_id,
@@ -163,13 +188,17 @@ async def extract_all(body: RecordsRequest = Body(..., example=example_request))
         logger.error(f"Error in extract_all: {e}")
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
-@app.get("/health", tags=["Health"])
-async def health_check():
+@router.get("/health", tags=["Health"])
+async def health_check(request: Request):
     """Health check endpoint."""
+    nlp = request.app.state.nlp
     try:
         # Test spaCy model
-        test_doc = nlp("Test document")
-        return {"status": "healthy", "model": "en_core_web_sm"}
+        nlp("Test document")
+        return {"status": "healthy", "model": f"{nlp.meta['lang']}_{nlp.meta['name']}"}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail="Service unhealthy")
+
+
+app = create_app()
