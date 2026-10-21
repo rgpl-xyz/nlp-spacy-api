@@ -3,25 +3,27 @@
 
 from collections import defaultdict
 from contextlib import asynccontextmanager
+import json
 import logging
 from pathlib import Path
-from typing import Callable, List, Dict
+from typing import Any, Callable, Dict, List
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse
 import spacy
 from spacy.language import Language
-import srsly
 
 from app.models import (
     ENT_PROP_MAP,
+    CombinedData,
+    EntitiesByTypeData,
+    EntitiesData,
+    NounPhrasesData,
     RecordsRequest,
     RecordsResponse,
-    RecordsEntitiesByTypeResponse,
-    RecordsNounPhrasesResponse,
-    RecordsCombinedResponse,
 )
+from app.skill import run_skill
 from app.spacy_extractor import SpacyExtractor
 
 # Configure logging
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = "en_core_web_sm"
 
-example_request = srsly.read_json(Path(__file__).parent / "data" / "example_request.json")
+EXAMPLE_REQUEST = json.loads((Path(__file__).parent / "data" / "example_request.json").read_text())
 
 router = APIRouter()
 
@@ -80,120 +82,73 @@ def get_extractor(request: Request) -> SpacyExtractor:
     return request.app.state.extractor
 
 
-def prepare_documents(values: List) -> List[Dict[str, str]]:
-    """Prepare documents for processing to avoid redundant operations."""
-    return [{"id": val.recordId, "text": val.data.text} for val in values]
+def analyze_with(extractor: SpacyExtractor) -> Callable[[List[str]], List[Dict[str, Any]]]:
+    """Each text's entities and noun phrases from one pass, in input order."""
+
+    def analyze(texts: List[str]) -> List[Dict[str, Any]]:
+        documents = [{"id": str(index), "text": text} for index, text in enumerate(texts)]
+        results = extractor.extract_entities_and_noun_phrases(documents)
+        return [
+            {"entities": entities["entities"], "noun_phrases": phrases["noun_phrases"]}
+            for entities, phrases in zip(results["entities"], results["noun_phrases"])
+        ]
+
+    return analyze
+
+
+def answer(body: RecordsRequest, extractor: SpacyExtractor, to_data: Callable[[Dict[str, Any]], Dict[str, Any]]):
+    return run_skill(body.values, analyze_with(extractor), to_data, model_language=extractor.nlp.lang)
+
+
+def entities_by_type(analysis: Dict[str, Any]) -> EntitiesByTypeData:
+    groups = defaultdict(list)
+    for entity in analysis["entities"]:
+        groups[ENT_PROP_MAP.get(entity["label"], entity["label"].lower())].append(entity["name"])
+    return dict(groups)
+
+
+# Handlers are plain functions: FastAPI runs them in its thread pool, so spaCy's CPU work doesn't
+# block the event loop the way it did inside async handlers.
+EXAMPLE_BODY = Body(..., examples=[EXAMPLE_REQUEST])
+
 
 @router.get("/", include_in_schema=False)
 def docs_redirect():
-    return RedirectResponse(f"/docs")
+    return RedirectResponse("/docs")
 
-@router.post("/entities", response_model=RecordsResponse, tags=["NER"])
-async def extract_entities(
-    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
-):
+
+@router.post("/entities", response_model=RecordsResponse[EntitiesData], tags=["NER"])
+def extract_entities(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
     """Extract Named Entities from a batch of Records."""
+    return answer(body, extractor, lambda analysis: {"entities": analysis["entities"]})
 
-    try:
-        documents = prepare_documents(body.values)
-        entities_res = extractor.extract_entities(documents)
 
-        res = [
-            {"recordId": er["id"], "data": {"entities": er["entities"]}, "errors": None, "warnings": None}
-            for er in entities_res
-        ]
-
-        return {"values": res}
-    except Exception as e:
-        logger.error(f"Error in extract_entities: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-
-@router.post(
-    "/entities_by_type", response_model=RecordsEntitiesByTypeResponse, tags=["NER"]
-)
-async def extract_entities_by_type(
-    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
-):
+@router.post("/entities_by_type", response_model=RecordsResponse[EntitiesByTypeData], tags=["NER"])
+def extract_entities_by_type(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
     """Extract Named Entities from a batch of Records separated by entity label.
         This route can be used directly as a Cognitive Skill in Azure Search
         For Documentation on integration with Azure Search, see here:
         https://docs.microsoft.com/en-us/azure/search/cognitive-search-custom-skill-interface"""
+    return answer(body, extractor, entities_by_type)
 
-    try:
-        documents = prepare_documents(body.values)
-        entities_res = extractor.extract_entities(documents)
-        res = []
 
-        for er in entities_res:
-            groupby = defaultdict(list)
-            for ent in er["entities"]:
-                ent_prop = ENT_PROP_MAP.get(ent["label"], ent["label"].lower())
-                groupby[ent_prop].append(ent["name"])
-            record = {"recordId": er["id"], "data": dict(groupby)}
-            res.append(record)
-
-        return {"values": res}
-    except Exception as e:
-        logger.error(f"Error in extract_entities_by_type: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-
-@router.post("/noun_phrases", response_model=RecordsNounPhrasesResponse, tags=["Syntax"])
-async def extract_noun_phrases(
-    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
-):
+@router.post("/noun_phrases", response_model=RecordsResponse[NounPhrasesData], tags=["Syntax"])
+def extract_noun_phrases(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
     """Extract Noun Phrases from a batch of Records."""
+    return answer(body, extractor, lambda analysis: {"noun_phrases": analysis["noun_phrases"]})
 
-    try:
-        documents = prepare_documents(body.values)
-        noun_phrases_res = extractor.extract_noun_phrases(documents)
 
-        res = [
-            {"recordId": np["id"], "data": {"noun_phrases": np["noun_phrases"]}, "errors": None, "warnings": None}
-            for np in noun_phrases_res
-        ]
+@router.post("/extract_all", response_model=RecordsResponse[CombinedData], tags=["Combined"])
+def extract_all(body: RecordsRequest = EXAMPLE_BODY, extractor: SpacyExtractor = Depends(get_extractor)):
+    """Extract both entities and noun phrases from a batch of Records in a single pass."""
+    return answer(body, extractor, lambda analysis: analysis)
 
-        return {"values": res}
-    except Exception as e:
-        logger.error(f"Error in extract_noun_phrases: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
-
-@router.post("/extract_all", response_model=RecordsCombinedResponse, tags=["Combined"])
-async def extract_all(
-    body: RecordsRequest = Body(..., example=example_request), extractor: SpacyExtractor = Depends(get_extractor)
-):
-    """Extract both entities and noun phrases from a batch of Records in a single optimized pass."""
-
-    try:
-        documents = prepare_documents(body.values)
-        results = extractor.extract_entities_and_noun_phrases(documents)
-
-        # Combine results into the expected format
-        combined_results = []
-        entities_dict = {er["id"]: er["entities"] for er in results["entities"]}
-        noun_phrases_dict = {np["id"]: np["noun_phrases"] for np in results["noun_phrases"]}
-
-        for doc_id in entities_dict.keys():
-            combined_results.append({
-                "recordId": doc_id,
-                "data": {
-                    "entities": entities_dict[doc_id],
-                    "noun_phrases": noun_phrases_dict.get(doc_id, [])
-                },
-                "errors": None,
-                "warnings": None
-            })
-
-        return {"values": combined_results}
-    except Exception as e:
-        logger.error(f"Error in extract_all: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
 
 @router.get("/health", tags=["Health"])
-async def health_check(request: Request):
+def health_check(request: Request):
     """Health check endpoint."""
     nlp = request.app.state.nlp
     try:
-        # Test spaCy model
         nlp("Test document")
         return {"status": "healthy", "model": f"{nlp.meta['lang']}_{nlp.meta['name']}"}
     except Exception as e:

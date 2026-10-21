@@ -1,7 +1,8 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, Generic, List, Optional, TypeVar
+
 from pydantic import BaseModel
 
 
@@ -41,60 +42,35 @@ class RecordsRequest(BaseModel):
     values: List[RecordRequest]
 
 
-class RecordDataResponse(BaseModel):
-    entities: List[Dict[str, Any]]
+# A failed record's data is empty, so every field has a default
+class EntitiesData(BaseModel):
+    entities: List[Dict[str, Any]] = []
 
 
-class RecordDataNounPhrasesResponse(BaseModel):
-    noun_phrases: List[str]
+class NounPhrasesData(BaseModel):
+    noun_phrases: List[str] = []
 
 
-class RecordDataCombinedResponse(BaseModel):
-    entities: List[Dict[str, Any]]
-    noun_phrases: List[str]
+class CombinedData(BaseModel):
+    entities: List[Dict[str, Any]] = []
+    noun_phrases: List[str] = []
+
+
+EntitiesByTypeData = Dict[str, List[str]]
+
+Data = TypeVar("Data")
 
 
 class Message(BaseModel):
     message: str
 
 
-class RecordResponse(BaseModel):
+class RecordResponse(BaseModel, Generic[Data]):
     recordId: str
-    data: RecordDataResponse
+    data: Data
     errors: Optional[List[Message]] = None
     warnings: Optional[List[Message]] = None
 
 
-class RecordNounPhrasesResponse(BaseModel):
-    recordId: str
-    data: RecordDataNounPhrasesResponse
-    errors: Optional[List[Message]] = None
-    warnings: Optional[List[Message]] = None
-
-
-class RecordCombinedResponse(BaseModel):
-    recordId: str
-    data: RecordDataCombinedResponse
-    errors: Optional[List[Message]] = None
-    warnings: Optional[List[Message]] = None
-
-
-class RecordsResponse(BaseModel):
-    values: List[RecordResponse]
-
-
-class RecordsNounPhrasesResponse(BaseModel):
-    values: List[RecordNounPhrasesResponse]
-
-
-class RecordsCombinedResponse(BaseModel):
-    values: List[RecordCombinedResponse]
-
-
-class RecordEntitiesByTypeResponse(BaseModel):
-    recordId: str
-    data: Dict[str, List[str]]
-
-
-class RecordsEntitiesByTypeResponse(BaseModel):
-    values: List[RecordEntitiesByTypeResponse]
+class RecordsResponse(BaseModel, Generic[Data]):
+    values: List[RecordResponse[Data]]
