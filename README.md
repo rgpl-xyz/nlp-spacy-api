@@ -92,3 +92,7 @@ The route handlers run in FastAPI's thread pool, so analyzing a batch doesn't ho
 ## Credits
 
 Started from Microsoft's [cookiecutter-spacy-fastapi](https://github.com/microsoft/cookiecutter-spacy-fastapi) template (MIT License); its copyright notices stay in the files that came from it.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
